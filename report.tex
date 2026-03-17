@@ -1,0 +1,405 @@
+\documentclass[11pt,letterpaper]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{float}
+\usepackage{setspace}
+\usepackage{parskip}
+\usepackage{microtype}
+\usepackage{xcolor}
+\usepackage{enumitem}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    citecolor=blue,
+    urlcolor=blue
+}
+
+\title{%
+  \textbf{Does Data Augmentation Benefit Scale With Architecture Depth?}\\[0.5em]
+  \large A Systematic Study of CNN Depth, Augmentation Intensity,\\
+  and Optimizer Choice on CIFAR-10\\[1em]
+  \normalsize COGS 181 Final Project
+}
+\author{Jae Kim}
+\date{March 2026}
+
+\begin{document}
+
+\maketitle
+\thispagestyle{empty}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\begin{abstract}
+% ─────────────────────────────────────────────────────────────────────────────
+Data augmentation is widely used to improve CNN generalization, but its interaction with model
+capacity and optimizer choice is understudied. We investigate whether the benefit of increasingly
+aggressive augmentation scales with architecture depth on CIFAR-10, and whether optimizer
+selection further modulates this relationship. Two convolutional networks are compared: a
+ShallowCNN (3 conv blocks, 620K parameters) and a DeepCNN (6 conv layers in a VGG-style
+arrangement, 3.25M parameters), each trained under four augmentation levels (none, basic,
+medium, aggressive) for 50 epochs. During the initial experiment we discovered that DeepCNN
+fails to train at the standard learning rate of 0.1 with SGD, collapsing to random-chance
+accuracy under any augmentation. We diagnose this as a learning rate instability driven by
+augmentation-induced gradient variance in deep non-residual networks, and resolve it by
+reducing the learning rate to 0.01 (SGD, 74.0\%). Switching to Adam ($\mathrm{lr}=10^{-3}$)
+further boosts DeepCNN to \textbf{89.1\%} under basic augmentation---a +15.1 percentage point
+gain over the tuned SGD baseline and the highest accuracy across all conditions. ShallowCNN is
+more robust to aggressive augmentation ($-9$ pp) than DeepCNN ($-30$ pp), supporting
+the hypothesis. Optimizer choice emerges as the single highest-impact hyperparameter in this study.
+\end{abstract}
+
+\setstretch{1.1}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Introduction}
+% ─────────────────────────────────────────────────────────────────────────────
+
+Data augmentation---artificially expanding the training distribution through random image
+transformations---is one of the most reliable regularization techniques in deep learning.
+By exposing the network to diverse variations of each training example, augmentation reduces
+overfitting and can meaningfully improve test accuracy \cite{shorten2019survey}. However,
+augmentation also adds variance to each gradient update, which may interact differently with
+networks of different capacities, depths, and optimizers.
+
+Our research question is: \textit{Does the benefit of aggressive data augmentation scale with
+architecture depth on CIFAR-10?} The intuition motivating this question has two competing
+sides. On one hand, deeper networks have greater capacity and thus more to gain from the
+implicit regularization that augmentation provides. On the other hand, deeper non-residual
+networks are harder to optimize and may be destabilized by the gradient noise that aggressive
+augmentation introduces.
+
+To study this, we design a controlled experiment on CIFAR-10 \cite{krizhevsky2009learning},
+comparing a ShallowCNN (3 conv blocks) and a DeepCNN (6 conv layers, VGG-inspired
+\cite{simonyanvery}) under four augmentation levels: none, basic (horizontal flip only), medium
+(flip + crop + color jitter), and aggressive (medium + grayscale + random erasing). The
+experiment produced two unexpected secondary findings. First, DeepCNN is highly sensitive to
+learning rate at the standard value of 0.1 with SGD, failing to train under any augmentation
+and achieving only 41.5\% even without augmentation. Second, after fixing the learning rate,
+switching from SGD to Adam yields a dramatic +15 pp improvement, reaching 89.1\% on the best
+configuration. Together, these findings show that hyperparameter interactions---learning rate,
+optimizer, and augmentation---are as important as architectural choices for deep non-residual
+CNNs, consistent with the broader findings of He et al.\ \cite{he2016deep} on deep network
+optimization.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Method}
+% ─────────────────────────────────────────────────────────────────────────────
+
+\subsection{Dataset}
+
+We use CIFAR-10 \cite{krizhevsky2009learning}, a standard benchmark consisting of 60,000
+color images (32$\times$32 pixels) across 10 classes. The official training set (50,000
+images) is split into 45,000 training samples and 5,000 validation samples using a fixed
+seed (seed=42). The test set (10,000 images) is held out and evaluated only at the end of
+each run. Images are normalized using the CIFAR-10 channel-wise mean $(0.4914, 0.4822, 0.4465)$
+and standard deviation $(0.2023, 0.1994, 0.2010)$.
+
+\subsection{Architectures}
+
+\paragraph{ShallowCNN} consists of three convolutional blocks, each with a Conv2d (kernel
+size 3, padding 1), BatchNorm2d, ReLU activation, and MaxPool2d(2) downsampling. Channel
+widths are 32, 64, and 128. The classifier head is: Flatten $\to$ Linear(2048, 256) $\to$
+ReLU $\to$ Dropout(0.5) $\to$ Linear(256, 10). Total parameters: \textbf{620,810}.
+
+\paragraph{DeepCNN} follows a VGG-style design \cite{simonyanvery} with three blocks, each
+containing two consecutive Conv-BN-ReLU layers followed by MaxPool2d(2) downsampling. Channel
+widths are (64, 64), (128, 128), and (256, 256). The classifier head is: Flatten $\to$
+Linear(4096, 512) $\to$ ReLU $\to$ Dropout(0.5) $\to$ Linear(512, 10). Total parameters:
+\textbf{3,249,994}. Both models use He (Kaiming) initialization.
+
+\subsection{Augmentation Levels}
+
+Four augmentation pipelines are defined, applied only during training; evaluation always uses
+the clean (no-augmentation) pipeline:
+
+\begin{itemize}[noitemsep]
+  \item \textbf{None:} Normalize only.
+  \item \textbf{Basic:} RandomHorizontalFlip + Normalize.
+  \item \textbf{Medium:} RandomHorizontalFlip + RandomCrop(32, padding=4) +
+        ColorJitter(0.2, 0.2, 0.2, 0.1) + Normalize.
+  \item \textbf{Aggressive:} Medium transforms + RandomGrayscale(p=0.1) +
+        RandomErasing(p=0.5).
+\end{itemize}
+
+\subsection{Training Protocol}
+
+All runs use cosine annealing LR schedule from $\mathrm{lr\_init}$ to 0 over 50 epochs;
+batch size 128; weight\_decay=$10^{-4}$; seed 42. Three optimizer configurations were evaluated:
+
+\begin{center}
+\begin{tabular}{llllr}
+\toprule
+Run set & Optimizer & $\mathrm{lr\_init}$ & Architectures & \# Runs \\
+\midrule
+Original & SGD (mom=0.9) & 0.1 & ShallowCNN + DeepCNN & 8 \\
+SGD rerun & SGD (mom=0.9) & 0.01 & DeepCNN only & 4 \\
+Adam & Adam & $10^{-3}$ & DeepCNN / basic aug & 1 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Experiments and Results}
+% ─────────────────────────────────────────────────────────────────────────────
+
+\subsection{Original 8 Runs (SGD, lr=0.1)}
+
+\begin{table}[H]
+\centering
+\caption{Test accuracy for all 8 original runs (SGD, lr=0.1).}
+\label{tab:original}
+\begin{tabular}{llr}
+\toprule
+Architecture & Augmentation & Test Accuracy \\
+\midrule
+ShallowCNN & None       & 69.6\% \\
+ShallowCNN & Basic      & \textbf{71.7\%} \\
+ShallowCNN & Medium     & 68.8\% \\
+ShallowCNN & Aggressive & 62.8\% \\
+\midrule
+DeepCNN    & None       & 41.5\% \\
+DeepCNN    & Basic      & 10.4\% \; (\textit{collapsed}) \\
+DeepCNN    & Medium     & 10.0\% \; (\textit{collapsed}) \\
+DeepCNN    & Aggressive & 10.0\% \; (\textit{collapsed}) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Figure~\ref{fig:learning_curves} shows the per-epoch learning curves for all 8 original runs.
+ShallowCNN trained consistently across all augmentation levels (62.8--71.7\%). DeepCNN
+showed a striking failure pattern: while it achieved 41.5\% without augmentation, all three
+augmented conditions plateaued at approximately 10\%---equivalent to random chance for a
+10-class problem---with training loss never decreasing.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=\textwidth]{../cogs181_results/figures/fig1_learning_curves.png}
+  \caption{Learning curves (train accuracy, dashed; val accuracy, solid) for all 8 original
+  runs at SGD lr=0.1. The bottom row (DeepCNN) shows complete training collapse under any
+  augmentation.}
+  \label{fig:learning_curves}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.8\textwidth]{../cogs181_results/figures/fig2_bar_test_accuracy.png}
+  \caption{Test accuracy for all original runs. ShallowCNN (blue) trains reliably; DeepCNN
+  (red) collapses under augmentation at SGD lr=0.1.}
+  \label{fig:bar_original}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.75\textwidth]{../cogs181_results/figures/fig3_augmentation_benefit.png}
+  \caption{Augmentation benefit relative to the no-augmentation baseline, using the
+  \emph{original} runs (SGD lr=0.1). ShallowCNN (blue) shows a mild $+$2.1\,pp gain from basic
+  augmentation and a $-$6.7\,pp penalty from aggressive. DeepCNN (red) shows $-$31\,pp for all
+  augmented conditions---a direct consequence of training collapse rather than augmentation
+  sensitivity per se.}
+  \label{fig:aug_benefit_orig}
+\end{figure}
+
+\subsection{LR Instability Diagnosis and Fix}
+
+\textbf{Hypothesis:} $\mathrm{lr}=0.1$ is too large for a 6-layer non-residual network
+combined with augmentation. Augmentation increases per-mini-batch input variance, which
+amplifies gradient variance. In a shallow network this variance is tolerable; in a deep
+non-residual network---where gradients must flow through many layers without skip
+connections---the same variance tips training into an unstable regime.
+
+\textbf{Fix:} Re-run all four DeepCNN conditions with $\mathrm{lr\_init}=0.01$.
+
+\begin{table}[H]
+\centering
+\caption{DeepCNN test accuracy before and after LR reduction.}
+\label{tab:lr_fix}
+\begin{tabular}{lrrr}
+\toprule
+Augmentation & SGD lr=0.1 & SGD lr=0.01 & $\Delta$ \\
+\midrule
+None       & 41.5\% & 66.6\% & $+$25.1 pp \\
+Basic      & 10.4\% & \textbf{74.0\%} & $+$63.6 pp \\
+Medium     & 10.0\% & 65.1\% & $+$55.1 pp \\
+Aggressive & 10.0\% & 44.3\% & $+$34.3 pp \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.75\textwidth]{../cogs181_results_rerun/figures/fig_rerun_lr_comparison.png}
+  \caption{DeepCNN test accuracy: original SGD lr=0.1 (dashed) vs.\ rerun SGD lr=0.01 (solid).
+  Reducing the learning rate by 10$\times$ recovers DeepCNN from collapse.}
+  \label{fig:lr_comparison}
+\end{figure}
+
+The hypothesis was confirmed. At lr=0.01, DeepCNN trained successfully across all augmentation
+levels, with best accuracy of 74.0\% (basic augmentation).
+
+\subsection{Augmentation Benefit: Properly Tuned Comparison}
+
+\begin{table}[H]
+\centering
+\caption{Final test accuracies: ShallowCNN (SGD lr=0.1) vs.\ DeepCNN SGD rerun (lr=0.01).}
+\label{tab:final}
+\begin{tabular}{lrrrr}
+\toprule
+Architecture & None & Basic & Medium & Aggressive \\
+\midrule
+ShallowCNN (SGD lr=0.1)  & 69.6\% & \textbf{71.7\%} & 68.8\% & 62.8\% \\
+DeepCNN (SGD lr=0.01)    & 66.6\% & \textbf{74.0\%} & 65.1\% & 44.3\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.8\textwidth]{../cogs181_results_rerun/figures/fig_rerun_comparison.png}
+  \caption{Side-by-side test accuracy: ShallowCNN (blue, SGD lr=0.1) vs.\ DeepCNN (red,
+  SGD lr=0.01). Both peak at basic augmentation; DeepCNN drops more sharply under aggressive
+  augmentation.}
+  \label{fig:rerun_comparison}
+\end{figure}
+
+The key finding: basic augmentation provides a modest benefit for both architectures
+(ShallowCNN: $+$2.1\,pp; DeepCNN: $+$7.4\,pp, both relative to each architecture's no-aug
+baseline). As augmentation intensity increases, the architectures diverge sharply. DeepCNN
+drops \textbf{29.7\,pp} from its best condition (basic: 74.0\%) to aggressive (44.3\%),
+while ShallowCNN drops only \textbf{8.9\,pp} (71.7\% $\to$ 62.8\%), even after learning rate
+correction. \textbf{ShallowCNN is substantially more robust to aggressive augmentation},
+supporting the research hypothesis.
+
+\subsection{Optimizer Comparison: Adam vs.\ SGD}
+
+To assess whether SGD remained the limiting factor after the LR fix, we ran DeepCNN with
+basic augmentation using Adam ($\mathrm{lr}=10^{-3}$, the standard default), holding all
+other hyperparameters fixed.
+
+\begin{table}[H]
+\centering
+\caption{Adam vs.\ SGD for DeepCNN / basic augmentation.}
+\label{tab:optimizer}
+\begin{tabular}{llr}
+\toprule
+Optimizer & $\mathrm{lr}$ & Test Accuracy \\
+\midrule
+SGD (momentum=0.9) & 0.01 & 74.0\% \\
+\textbf{Adam} & $\mathbf{10^{-3}}$ & \textbf{89.1\%} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.5\textwidth]{../cogs181_results_rerun/figures/fig_adam_vs_sgd.png}
+  \caption{Adam vs.\ SGD test accuracy for DeepCNN / basic augmentation. Adam outperforms
+  the tuned SGD baseline by +15.1 percentage points.}
+  \label{fig:adam_vs_sgd}
+\end{figure}
+
+Adam outperforms SGD by \textbf{+15.1 pp}---the single largest accuracy gain in the study.
+This suggests that Adam's adaptive per-parameter learning rates substantially help in the
+VGG-style deep non-residual setting, likely by compensating for the uneven gradient magnitude
+distributions across deep layers that make a single fixed SGD learning rate suboptimal.
+
+\subsection{Overfitting Analysis}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.8\textwidth]{../cogs181_results/figures/fig4_train_val_gap.png}
+  \caption{Train--validation accuracy gap (train$-$val at epoch 50) for all original runs.
+  ShallowCNN gaps turn increasingly negative as augmentation intensifies (effective
+  regularization). DeepCNN without augmentation shows a $-$2.7\,pp gap (val $>$ train,
+  underfitting rather than overfitting). Augmented DeepCNN conditions show near-zero gaps
+  ($+$0.6\,pp) because both train and val are stuck at $\sim$10\%.}
+  \label{fig:train_val_gap}
+\end{figure}
+
+The train--validation accuracy gap (train$-$val at epoch 50) serves as a proxy for
+overfitting. For ShallowCNN, the gap shrinks---and turns negative---as augmentation
+intensifies: $+$3.8\,pp (none) $\to$ $-$0.1\,pp (basic) $\to$ $-$6.2\,pp (medium)
+$\to$ $-$11.8\,pp (aggressive). Negative gaps are expected here: augmentation makes each
+training image harder, suppressing training accuracy while the validation set remains clean.
+This is evidence of effective regularization, not model failure. For original DeepCNN
+(lr=0.1), the no-aug condition shows a $-$2.7\,pp gap (val $>$ train), indicating the model
+is underfitting in training rather than overfitting. The three collapsed augmented conditions
+show near-zero gaps ($+$0.6\,pp) because both train and val are stuck at random chance.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Discussion}
+% ─────────────────────────────────────────────────────────────────────────────
+
+\paragraph{Primary finding.} Basic augmentation provides consistent improvement for both
+architectures. Aggressive augmentation hurts the deeper model disproportionately ($-30$ pp
+vs.\ $-9$ pp). ShallowCNN is more robust to aggressive augmentation, supporting the hypothesis.
+
+\paragraph{LR sensitivity.} DeepCNN fails completely at SGD lr=0.1 under augmentation.
+Reducing to lr=0.01 recovers training. This is consistent with VGG-style networks requiring
+more conservative SGD learning rates than shallow networks \cite{simonyanvery}.
+
+\paragraph{Optimizer impact.} Switching from SGD (lr=0.01) to Adam (lr=$10^{-3}$) improves
+DeepCNN by +15.1 pp on the best configuration, reaching 89.1\%. Adam's adaptive learning
+rates appear especially beneficial for deep non-residual architectures, where layers develop
+very different gradient magnitude distributions. Optimizer selection is at least as important
+as learning rate tuning for this class of models.
+
+\paragraph{Limitations.} The most significant limitation is the absence of residual
+connections, which would likely change both LR sensitivity and augmentation robustness. The
+Adam run was performed only for DeepCNN / basic augmentation; a full sweep across augmentation
+levels would determine whether Adam also reduces the aggressive-augmentation penalty.
+SGD and Adam learning rates were not jointly swept.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Conclusion}
+% ─────────────────────────────────────────────────────────────────────────────
+
+We conducted a systematic study of the interaction between CNN depth, augmentation intensity,
+and optimizer choice on CIFAR-10. Our original 8-run experiment revealed an unexpected training
+failure: DeepCNN collapses to random-chance accuracy under any augmentation at SGD lr=0.1.
+Reducing the learning rate to 0.01 recovered training (best: 74.0\%, basic augmentation).
+Switching to Adam ($\mathrm{lr}=10^{-3}$) further improved DeepCNN to \textbf{89.1\%}---the
+highest accuracy in the study, and a +15.1 pp gain over the tuned SGD baseline.
+
+Despite DeepCNN's higher peak accuracy when properly optimized, ShallowCNN is substantially
+more robust to aggressive augmentation ($-9$ pp vs.\ $-30$ pp from best to aggressive
+condition), supporting the research hypothesis. The overarching takeaways are: (1)
+learning rate and augmentation must be tuned jointly for deep non-residual networks; (2)
+Adam provides major gains over SGD for VGG-style architectures; (3) ShallowCNN provides
+a more reliable baseline when training conditions cannot be carefully controlled. Future
+work should apply Adam across all augmentation levels, explore residual connections, and
+investigate weight decay as a complementary regularizer.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\begin{thebibliography}{9}
+% ─────────────────────────────────────────────────────────────────────────────
+
+\bibitem{krizhevsky2009learning}
+A.~Krizhevsky.
+\newblock Learning multiple layers of features from tiny images.
+\newblock Technical Report, University of Toronto, 2009.
+
+\bibitem{simonyanvery}
+K.~Simonyan and A.~Zisserman.
+\newblock Very deep convolutional networks for large-scale image recognition.
+\newblock In \textit{ICLR}, 2015.
+
+\bibitem{he2016deep}
+K.~He, X.~Zhang, S.~Ren, and J.~Sun.
+\newblock Deep residual learning for image recognition.
+\newblock In \textit{CVPR}, pp.~770--778, 2016.
+
+\bibitem{shorten2019survey}
+C.~Shorten and T.~M. Khoshgoftaar.
+\newblock A survey on image data augmentation for deep learning.
+\newblock \textit{Journal of Big Data}, 6(1):60, 2019.
+
+\end{thebibliography}
+
+\end{document}
