@@ -1,0 +1,9 @@
+Architecture,Augmentation,Test Accuracy,Parameters,Train Time (min)
+ShallowCNN,None,69.55%,"620,810",19.3
+ShallowCNN,Basic,71.67%,"620,810",19.8
+ShallowCNN,Medium,68.77%,"620,810",50.03
+ShallowCNN,Aggressive,62.84%,"620,810",57.81
+DeepCNN,None,41.53%,"3,249,994",19.71
+DeepCNN,Basic,10.42%,"3,249,994",470.18
+DeepCNN,Medium,10.00%,"3,249,994",53.36
+DeepCNN,Aggressive,10.00%,"3,249,994",61.49
